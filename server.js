@@ -1,11 +1,11 @@
 import { db } from "./firebaseAdmin.js";
 import dotenv from "dotenv";
-dotenv.config();
-
 import express from "express";
 import cors from "cors";
 import { google } from "googleapis";
-import fs from "fs";
+
+// Load the custom .env file
+dotenv.config({ path: './render.env' });
 
 const app = express();
 app.use(cors());
@@ -18,14 +18,27 @@ app.get("/", (req, res) => {
 // Load Google service account credentials
 let credentials;
 try {
-  credentials = JSON.parse(fs.readFileSync("service-account.json"));
+  credentials = {
+    type: process.env.GOOGLE_TYPE,
+    project_id: process.env.GOOGLE_PROJECT_ID,
+    private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID,
+    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    client_email: process.env.GOOGLE_CLIENT_EMAIL,
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    auth_uri: process.env.GOOGLE_AUTH_URI,
+    token_uri: process.env.GOOGLE_TOKEN_URI,
+    auth_provider_x509_cert_url: process.env.GOOGLE_AUTH_PROVIDER_CERT_URL,
+    client_x509_cert_url: process.env.GOOGLE_CLIENT_CERT_URL,
+  };
 } catch (error) {
   console.error("Failed to load service account credentials:", error);
   process.exit(1);
 }
 
-const auth = new google.auth.GoogleAuth({
-  credentials,
+// Initialize Google Auth Client
+const auth = new google.auth.JWT({
+  email: credentials.client_email,
+  key: credentials.private_key,
   scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
 });
 
@@ -42,7 +55,7 @@ async function fetchMasterSheetData() {
     });
     return response.data.values || [];
   } catch (error) {
-    console.error(`Error fetching master sheet:`, error);
+    console.error("Error fetching master sheet:", error);
     return null;
   }
 }
@@ -51,12 +64,8 @@ async function fetchMasterSheetData() {
 async function getClientPL(client, groups, masterSheetData) {
   const clientGroups = groups.filter(group => client.groups_client_is_part_of.includes(group.groupID));
 
-  console.log(`\nNow starting for user: ${client.name}`);
-  console.log("groups_client_is_part_of", "(array)", client.groups_client_is_part_of);
-
   const joiningDate = new Date(client.joining_date._seconds * 1000);
   joiningDate.setUTCHours(0, 0, 0, 0);
-  console.log(`\nJoining Date: ${joiningDate.toISOString()}`);
 
   let plPercentageTotal = 0;
   let plAbsTotal = 0;
@@ -64,19 +73,12 @@ async function getClientPL(client, groups, masterSheetData) {
   let failedGroups = [];
 
   for (const group of clientGroups) {
-    console.log(`\nNow starting for groupID ${group.groupID}`);
-
     const relevantRows = masterSheetData.filter(row => row[1] === group.groupName);
 
     if (relevantRows.length === 0) {
       failedGroups.push(group.groupName);
-      console.log(`❌ No matching data found for group ${group.groupName}`);
       continue;
     }
-
-    let groupPlPercentageTotal = 0;
-    let groupPlAbsTotal = 0;
-    let groupCalls = 0;
 
     for (const row of relevantRows) {
       let rawDate = row[2];
@@ -89,25 +91,17 @@ async function getClientPL(client, groups, masterSheetData) {
         entryDate = new Date(rawDate);
       }
 
-      if (isNaN(entryDate.getTime())) continue;
+      if (isNaN(entryDate.getTime()) || entryDate < joiningDate) continue;
 
       let plPercentage = parseFloat(row[13]) || 0;
       let plAbs = parseFloat(row[14]) || 0;
 
-      if (entryDate >= joiningDate) {
-        groupPlPercentageTotal += plPercentage;
-        groupPlAbsTotal += plAbs;
-        groupCalls++;
-      }
+      plPercentageTotal += plPercentage;
+      plAbsTotal += plAbs;
+      totalCalls++;
     }
-
-    console.log(`Sum of all P&L(%) = ${groupPlPercentageTotal}, Sum of all P&L(Abs) = ${groupPlAbsTotal}`);
-    plPercentageTotal += groupPlPercentageTotal;
-    plAbsTotal += groupPlAbsTotal;
-    totalCalls += groupCalls;
   }
 
-  console.log(`\nFinal P&L for ${client.name}: P&L(%) = ${plPercentageTotal}, P&L(Abs) = ${plAbsTotal}, Total Calls = ${totalCalls}`);
   return { plPercentageTotal, plAbsTotal, totalCalls, failedGroups };
 }
 
@@ -120,38 +114,29 @@ async function getClientReportsCount(client, groups) {
   for (const group of clientGroups) {
     try {
       const reportsSnapshot = await db.collection("groups").doc(group.id).collection("reports").get();
-      let groupReportsCount = 0;
-
       reportsSnapshot.forEach(doc => {
         const reportData = doc.data();
         if (reportData.timestamp && reportData.timestamp._seconds * 1000 >= joiningDate.getTime()) {
-          groupReportsCount++;
+          totalReports++;
         }
       });
-
-      totalReports += groupReportsCount;
-      console.log(`User: ${client.name} | Group: ${group.groupName} | Reports Count: ${groupReportsCount}`);
     } catch (error) {
       console.error(`Error fetching reports for group ${group.groupName}:`, error);
     }
   }
 
-  console.log(`Final Reports Count for ${client.name}: ${totalReports}`);
   return totalReports;
 }
 
 // API Endpoint
 app.get("/api/data", async (req, res) => {
   try {
-    console.log("Fetching users and groups...");
-
     const usersCollection = await db.collection("users").get();
     const users = usersCollection.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
     const groupsCollection = await db.collection("groups").get();
     const groups = groupsCollection.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    console.log("Fetching master sheet data...");
     const masterSheetData = await fetchMasterSheetData();
     if (!masterSheetData) {
       return res.status(500).json({ error: "Failed to fetch master sheet data" });
@@ -163,13 +148,13 @@ app.get("/api/data", async (req, res) => {
         const { plPercentageTotal, plAbsTotal, totalCalls, failedGroups } = await getClientPL(user, groups, masterSheetData);
         const totalReports = await getClientReportsCount(user, groups);
 
-        return { 
-          ...user, 
-          totalPLPercentage: plPercentageTotal, 
-          totalPLAbs: plAbsTotal, 
-          totalCalls, 
-          totalReports, 
-          failedGroups 
+        return {
+          ...user,
+          totalPLPercentage: plPercentageTotal,
+          totalPLAbs: plAbsTotal,
+          totalCalls,
+          totalReports,
+          failedGroups,
         };
       })
     );
@@ -184,3 +169,4 @@ app.get("/api/data", async (req, res) => {
 // Start Server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
