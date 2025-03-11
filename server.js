@@ -29,8 +29,8 @@ const auth = new google.auth.GoogleAuth({
   scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
 });
 
-const SPREADSHEET_ID = "1I1ev3Cp3dz-vPHhWT9zzIdDJyvM74eVfiNxwdEbxKpM"; // Your Master Sheet ID
-const SHEET_NAME = "Sheet1"; // Change if needed
+const SPREADSHEET_ID = "1I1ev3Cp3dz-vPHhWT9zzIdDJyvM74eVfiNxwdEbxKpM";
+const SHEET_NAME = "Sheet1";
 
 // Fetch entire master sheet data
 async function fetchMasterSheetData() {
@@ -66,8 +66,7 @@ async function getClientPL(client, groups, masterSheetData) {
   for (const group of clientGroups) {
     console.log(`\nNow starting for groupID ${group.groupID}`);
 
-    // Filter relevant rows from master sheet where Plan == groupName
-    const relevantRows = masterSheetData.filter(row => row[1] === group.groupName); // Column B (Plan)
+    const relevantRows = masterSheetData.filter(row => row[1] === group.groupName);
 
     if (relevantRows.length === 0) {
       failedGroups.push(group.groupName);
@@ -80,7 +79,7 @@ async function getClientPL(client, groups, masterSheetData) {
     let groupCalls = 0;
 
     for (const row of relevantRows) {
-      let rawDate = row[2]; // Column C (Entry Date)
+      let rawDate = row[2];
       let entryDate;
 
       if (typeof rawDate === "string") {
@@ -92,8 +91,8 @@ async function getClientPL(client, groups, masterSheetData) {
 
       if (isNaN(entryDate.getTime())) continue;
 
-      let plPercentage = parseFloat(row[13]) || 0; // Column N
-      let plAbs = parseFloat(row[14]) || 0; // Column O
+      let plPercentage = parseFloat(row[13]) || 0;
+      let plAbs = parseFloat(row[14]) || 0;
 
       if (entryDate >= joiningDate) {
         groupPlPercentageTotal += plPercentage;
@@ -158,7 +157,6 @@ app.get("/api/data", async (req, res) => {
       return res.status(500).json({ error: "Failed to fetch master sheet data" });
     }
 
-    // Process users
     const processedUsers = await Promise.all(
       users.map(async (user) => {
         if (user.role !== "user" || !user.groups_client_is_part_of) return user;
